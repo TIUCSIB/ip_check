@@ -1,8 +1,8 @@
 #!/bin/bash
 
 # ========================
-# ??????
-# ??????????????????
+# Customizable section
+# You can also override these via environment variables
 # APP_NAME=agent CLI_NAME=ctl SERVICE_NAME=agent BIN_NAME=agent bash install-custom.sh
 # ========================
 APP_NAME="${APP_NAME:-nezha-agent}"
@@ -13,7 +13,7 @@ BIN_NAME="${BIN_NAME:-$APP_NAME}"
 RUN_USER="${RUN_USER:-root}"
 RUN_GROUP="${RUN_GROUP:-root}"
 
-# ???????????? wyx2685/v2node ? release?
+# Upstream binary source (still uses wyx2685/v2node releases by default)
 UPSTREAM_REPO="${UPSTREAM_REPO:-wyx2685/v2node}"
 UPSTREAM_BRANCH="${UPSTREAM_BRANCH:-main}"
 UPSTREAM_RELEASE_ASSET_PREFIX="${UPSTREAM_RELEASE_ASSET_PREFIX:-v2node-linux}"
@@ -28,8 +28,8 @@ PID_FILE="${PID_FILE:-/run/$SERVICE_NAME.pid}"
 KEEP_CONFIG_ON_UNINSTALL="${KEEP_CONFIG_ON_UNINSTALL:-0}"
 AUTO_OPEN_PORTS="${AUTO_OPEN_PORTS:-0}"
 
-# ???????????????????? geo ???
-# ???????? /etc/v2node ?????? 0?
+# Compatibility mode: some builds may still read old geo/config paths
+# Set to 0 if you want to remove /etc/v2node compatibility traces
 ENABLE_LEGACY_COMPAT="${ENABLE_LEGACY_COMPAT:-1}"
 LEGACY_COMPAT_DIR="${LEGACY_COMPAT_DIR:-/etc/v2node}"
 # ========================
@@ -48,7 +48,7 @@ API_HOST_ARG=""
 NODE_ID_ARG=""
 API_KEY_ARG=""
 
-[[ $EUID -ne 0 ]] && echo -e "${red}???${plain} ???? root ????????\n" && exit 1
+[[ $EUID -ne 0 ]] && echo -e "${red}Error:${plain} this script must be run as root.\n" && exit 1
 
 if [[ -f /etc/redhat-release ]]; then
     release="centos"
@@ -69,7 +69,7 @@ elif cat /proc/version 2>/dev/null | grep -Eqi "centos|red hat|redhat|rocky|alma
 elif cat /proc/version 2>/dev/null | grep -Eqi "arch"; then
     release="arch"
 else
-    echo -e "${red}???????????????????${plain}\n" && exit 1
+    echo -e "${red}Unable to detect the OS version. Please adapt the script manually.${plain}\n" && exit 1
 fi
 
 arch=$(uname -m)
@@ -81,11 +81,11 @@ elif [[ $arch == "s390x" ]]; then
     arch="s390x"
 else
     arch="64"
-    echo -e "${yellow}?????????????: ${arch}${plain}"
+    echo -e "${yellow}Architecture detection failed, using default: ${arch}${plain}"
 fi
 
 if [ "$(getconf WORD_BIT)" != '32' ] && [ "$(getconf LONG_BIT)" != '64' ]; then
-    echo "?????? 32 ??????? 64 ????"
+    echo "32-bit systems are not supported. Please use a 64-bit system."
     exit 2
 fi
 
@@ -98,15 +98,15 @@ fi
 
 if [[ x"${release}" == x"centos" ]]; then
     if [[ ${os_version:-7} -le 6 ]]; then
-        echo -e "${red}??? CentOS 7 ?????????${plain}\n" && exit 1
+        echo -e "${red}Please use CentOS 7 or newer.${plain}\n" && exit 1
     fi
 elif [[ x"${release}" == x"ubuntu" ]]; then
     if [[ ${os_version:-20} -lt 16 ]]; then
-        echo -e "${red}??? Ubuntu 16 ?????????${plain}\n" && exit 1
+        echo -e "${red}Please use Ubuntu 16 or newer.${plain}\n" && exit 1
     fi
 elif [[ x"${release}" == x"debian" ]]; then
     if [[ ${os_version:-11} -lt 8 ]]; then
-        echo -e "${red}??? Debian 8 ?????????${plain}\n" && exit 1
+        echo -e "${red}Please use Debian 8 or newer.${plain}\n" && exit 1
     fi
 fi
 
@@ -123,7 +123,7 @@ parse_args() {
                 show_usage
                 exit 0 ;;
             --*)
-                echo -e "${red}????: $1${plain}"
+                echo -e "${red}Unknown argument: $1${plain}"
                 exit 1 ;;
             *)
                 if [[ -z "$VERSION_ARG" ]]; then
@@ -205,13 +205,13 @@ install_base() {
 
 print_banner() {
     echo "------------------------------------------"
-    echo -e "${green}${DISPLAY_NAME}${plain} ???????"
-    echo "CLI ??: ${CLI_NAME}"
-    echo "????: ${SERVICE_NAME}"
-    echo "????: ${BIN_NAME}"
-    echo "????: ${INSTALL_DIR}"
-    echo "????: ${CONFIG_FILE}"
-    echo "????: ${UPSTREAM_REPO}"
+    echo -e "${green}${DISPLAY_NAME}${plain} custom installer"
+    echo "CLI name: ${CLI_NAME}"
+    echo "Service name: ${SERVICE_NAME}"
+    echo "Binary name: ${BIN_NAME}"
+    echo "Install dir: ${INSTALL_DIR}"
+    echo "Config file: ${CONFIG_FILE}"
+    echo "Upstream repo: ${UPSTREAM_REPO}"
     echo "------------------------------------------"
 }
 
@@ -243,17 +243,30 @@ check_enabled() {
     fi
 }
 
+is_install_complete() {
+    [[ -x "${INSTALL_DIR}/${BIN_NAME}" ]] || return 1
+    [[ -x "${CLI_PATH}" ]] || return 1
+
+    if [[ x"${release}" == x"alpine" ]]; then
+        [[ -f "/etc/init.d/${SERVICE_NAME}" ]] || return 1
+    else
+        [[ -f "/etc/systemd/system/${SERVICE_NAME}.service" ]] || return 1
+    fi
+
+    return 0
+}
+
 show_status_line() {
     check_status
     case $? in
-        0) echo -e "??: ${green}???${plain}" ;;
-        1) echo -e "??: ${yellow}???${plain}" ;;
-        2) echo -e "??: ${red}???${plain}" ;;
+        0) echo -e "Status: ${green}running${plain}" ;;
+        1) echo -e "Status: ${yellow}stopped${plain}" ;;
+        2) echo -e "Status: ${red}not installed${plain}" ;;
     esac
     if check_enabled >/dev/null 2>&1; then
-        echo -e "????: ${green}???${plain}"
+        echo -e "Autostart: ${green}enabled${plain}"
     else
-        echo -e "????: ${yellow}???${plain}"
+        echo -e "Autostart: ${yellow}disabled${plain}"
     fi
 }
 
@@ -267,7 +280,7 @@ resolve_version() {
     local last_version
     last_version=$(curl -fsSL "$RELEASE_API_URL" | grep '"tag_name":' | sed -E 's/.*"([^"]+)".*/\1/')
     if [[ -z "$last_version" ]]; then
-        echo -e "${red}???????????????????????${plain}"
+        echo -e "${red}Failed to detect the latest release. Please try again later or specify a version manually.${plain}"
         return 1
     fi
     echo "$last_version"
@@ -278,7 +291,7 @@ download_release() {
     local zip_path="$2"
     local url="https://github.com/${UPSTREAM_REPO}/releases/download/${version}/${UPSTREAM_RELEASE_ASSET_PREFIX}-${arch}.zip"
 
-    echo -e "${green}????: ${url}${plain}"
+    echo -e "${green}Downloading: ${url}${plain}"
     curl -fL --progress-bar "$url" -o "$zip_path"
 }
 
@@ -414,9 +427,9 @@ report_service_status() {
     check_status
     echo ""
     if [[ $? == 0 ]]; then
-        echo -e "${green}${DISPLAY_NAME} ????${plain}"
+        echo -e "${green}${DISPLAY_NAME} started successfully${plain}"
     else
-        echo -e "${red}${DISPLAY_NAME} ?????????? ${CLI_NAME} log ????${plain}"
+        echo -e "${red}${DISPLAY_NAME} may have failed to start. Run ${CLI_NAME} log to inspect it.${plain}"
     fi
 }
 
@@ -445,18 +458,18 @@ generate_config() {
 EOF
     sync_legacy_compat
 
-    echo -e "${green}???????: ${CONFIG_FILE}${plain}"
+    echo -e "${green}Config file generated: ${CONFIG_FILE}${plain}"
     service_action restart >/dev/null 2>&1 || service_action start >/dev/null 2>&1 || true
     report_service_status
 }
 
 interactive_generate_config() {
     local api_host node_id api_key
-    read -rp "?? API ?? [??: https://example.com/]: " api_host
+    read -rp "API host [example: https://example.com/]: " api_host
     api_host=${api_host:-https://example.com/}
-    read -rp "?? ID: " node_id
+    read -rp "Node ID: " node_id
     node_id=${node_id:-1}
-    read -rp "??????: " api_key
+    read -rp "API key: " api_key
 
     generate_config "$api_host" "$node_id" "$api_key"
 }
@@ -474,7 +487,7 @@ open_ports() {
     iptables -F 2>/dev/null || true
     iptables -X 2>/dev/null || true
     netfilter-persistent save 2>/dev/null || true
-    echo -e "${green}???????????${plain}"
+    echo -e "${green}Firewall rules have been relaxed.${plain}"
 }
 
 install_app() {
@@ -493,7 +506,7 @@ install_app() {
 
     mkdir -p /tmp
     cat "$self_path" > "$temp_self_copy" || {
-        echo -e "${red}????????????????${plain}"
+        echo -e "${red}Failed to save the current script. Installation cannot continue.${plain}"
         exit 1
     }
 
@@ -503,7 +516,7 @@ install_app() {
 
     download_release "$release_version" "$zip_file"
     if [[ $? -ne 0 || ! -s "$zip_file" ]]; then
-        echo -e "${red}??????????????? Github?${plain}"
+        echo -e "${red}Download failed. Please check whether this server can access GitHub.${plain}"
         exit 1
     fi
 
@@ -511,7 +524,7 @@ install_app() {
     rm -f "$zip_file"
 
     if [[ ! -f "$UPSTREAM_RELEASE_BIN_NAME" ]]; then
-        echo -e "${red}????????????: ${UPSTREAM_RELEASE_BIN_NAME}${plain}"
+        echo -e "${red}The binary was not found in the archive: ${UPSTREAM_RELEASE_BIN_NAME}${plain}"
         exit 1
     fi
 
@@ -534,7 +547,7 @@ install_app() {
         open_ports
     fi
 
-    echo -e "${green}${DISPLAY_NAME} ${release_version}${plain} ??/????"
+    echo -e "${green}${DISPLAY_NAME} ${release_version}${plain} install/update completed"
 
     if [[ $existed_config -eq 1 ]]; then
         service_action restart >/dev/null 2>&1 || service_action start >/dev/null 2>&1 || true
@@ -552,16 +565,16 @@ install_app() {
 
     cd "$cur_dir" || exit 1
     echo "------------------------------------------"
-    echo "????:"
+    echo "Current settings:"
     echo "${CLI_NAME} start|stop|restart|status|enable|disable|log|generate|config|version|update|uninstall"
     echo "------------------------------------------"
 
     if [[ $first_install -eq 1 ]]; then
-        read -rp "???????????????????(y/n): " if_generate
+        read -rp "First install detected. Generate the config file now? (y/n): " if_generate
         if [[ "$if_generate" =~ ^[Yy]$ ]]; then
             interactive_generate_config
         else
-            echo -e "${yellow}????????????? ${CLI_NAME} generate${plain}"
+            echo -e "${yellow}Skipped config generation. You can run ${CLI_NAME} generate later.${plain}"
         fi
     fi
 }
@@ -569,7 +582,7 @@ install_app() {
 start_app() {
     check_status
     if [[ $? == 0 ]]; then
-        echo -e "${yellow}${DISPLAY_NAME} ????${plain}"
+        echo -e "${yellow}${DISPLAY_NAME} is already running${plain}"
         return 0
     fi
     service_action start >/dev/null 2>&1 || true
@@ -581,9 +594,9 @@ stop_app() {
     sleep 2
     check_status
     if [[ $? == 1 || $? == 2 ]]; then
-        echo -e "${green}${DISPLAY_NAME} ???${plain}"
+        echo -e "${green}${DISPLAY_NAME} stopped${plain}"
     else
-        echo -e "${red}${DISPLAY_NAME} ????${plain}"
+        echo -e "${red}${DISPLAY_NAME} failed to stop${plain}"
     fi
 }
 
@@ -607,9 +620,9 @@ enable_app() {
         systemctl enable "$SERVICE_NAME" >/dev/null 2>&1
     fi
     if [[ $? == 0 ]]; then
-        echo -e "${green}???????${plain}"
+        echo -e "${green}Autostart enabled${plain}"
     else
-        echo -e "${red}????????${plain}"
+        echo -e "${red}Failed to change autostart setting${plain}"
     fi
 }
 
@@ -620,15 +633,15 @@ disable_app() {
         systemctl disable "$SERVICE_NAME" >/dev/null 2>&1
     fi
     if [[ $? == 0 ]]; then
-        echo -e "${green}???????${plain}"
+        echo -e "${green}Autostart disabled${plain}"
     else
-        echo -e "${red}????????${plain}"
+        echo -e "${red}Failed to change autostart setting${plain}"
     fi
 }
 
 show_log() {
     if [[ x"${release}" == x"alpine" ]]; then
-        echo -e "${red}alpine ???????????${plain}"
+        echo -e "${red}This log viewer is not supported on Alpine.${plain}"
         exit 1
     fi
     journalctl -u "${SERVICE_NAME}.service" -e --no-pager -f
@@ -637,7 +650,7 @@ show_log() {
 edit_config() {
     mkdir -p "$CONFIG_DIR"
     if [[ ! -f "$CONFIG_FILE" ]]; then
-        echo -e "${yellow}???????????????????${plain}"
+        echo -e "${yellow}Config file is missing. Creating an empty template for you.${plain}"
         cat > "$CONFIG_FILE" <<EOF
 {
     "Log": {
@@ -655,15 +668,15 @@ EOF
 
 show_version() {
     if [[ ! -x "${INSTALL_DIR}/${BIN_NAME}" ]]; then
-        echo -e "${red}???${plain}"
+        echo -e "${red}Not installed${plain}"
         exit 1
     fi
-    echo -n "${DISPLAY_NAME} ??: "
+    echo -n "${DISPLAY_NAME} version: "
     "${INSTALL_DIR}/${BIN_NAME}" version
 }
 
 uninstall_app() {
-    read -rp "???? ${DISPLAY_NAME} ??(y/n): " answer
+    read -rp "Uninstall ${DISPLAY_NAME}? (y/n): " answer
     [[ ! "$answer" =~ ^[Yy]$ ]] && exit 0
 
     service_action stop >/dev/null 2>&1 || true
@@ -685,17 +698,17 @@ uninstall_app() {
     fi
 
     cleanup_legacy_compat
-    echo -e "${green}????${plain}"
+    echo -e "${green}Uninstall completed${plain}"
 }
 
 show_usage() {
-    echo "${DISPLAY_NAME} ??????:"
-    echo "  bash $0 [???] [--api-host URL] [--node-id ID] [--api-key KEY]"
-    echo "  ${CLI_NAME} install [???] [--api-host URL] [--node-id ID] [--api-key KEY]"
-    echo "  ${CLI_NAME} update [???]"
+    echo "${DISPLAY_NAME} usage:"
+    echo "  bash $0 [version] [--api-host URL] [--node-id ID] [--api-key KEY]"
+    echo "  ${CLI_NAME} install [version] [--api-host URL] [--node-id ID] [--api-key KEY]"
+    echo "  ${CLI_NAME} update [version]"
     echo "  ${CLI_NAME} start|stop|restart|status|enable|disable|log|generate|config|version|uninstall"
     echo ""
-    echo "????:"
+    echo "Current settings:"
     echo "  APP_NAME=${APP_NAME}"
     echo "  CLI_NAME=${CLI_NAME}"
     echo "  SERVICE_NAME=${SERVICE_NAME}"
@@ -708,7 +721,7 @@ show_usage() {
 require_installed() {
     check_status
     if [[ $? == 2 ]]; then
-        echo -e "${red}???? ${DISPLAY_NAME}${plain}"
+        echo -e "${red}Please install ${DISPLAY_NAME} first${plain}"
         exit 1
     fi
 }
@@ -789,8 +802,7 @@ main() {
             show_usage
             ;;
         "")
-            check_status
-            if [[ $? == 2 ]]; then
+            if ! is_install_complete; then
                 parse_args "$@"
                 print_banner
                 install_base
@@ -803,14 +815,13 @@ main() {
             fi
             ;;
         *)
-            check_status
-            if [[ $? == 2 ]]; then
+            if ! is_install_complete; then
                 parse_args "$@"
                 print_banner
                 install_base
                 install_app "$VERSION_ARG"
             else
-                echo -e "${red}????: ${cmd}${plain}"
+                echo -e "${red}Unknown command: ${cmd}${plain}"
                 echo ""
                 show_usage
                 exit 1
