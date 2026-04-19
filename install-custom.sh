@@ -5,9 +5,9 @@
 # =========================================================
 
 # --- 你可以在这里修改为你想要的名称 ---
-CUSTOM_APP_NAME="agent-core"       # 安装目录名和程序文件名
-CUSTOM_CLI_NAME="ctl"              # 你在命令行输入的管理命令名称
-CUSTOM_SERVICE_NAME="agent-svc"    # 系统服务名称
+CUSTOM_APP_NAME="nezha-agent"       # 安装目录名和程序文件名
+CUSTOM_CLI_NAME="nz"              # 你在命令行输入的管理命令名称
+CUSTOM_SERVICE_NAME="nezha-agent"    # 系统服务名称
 # -----------------------------------
 
 red='\033[0;31m'
