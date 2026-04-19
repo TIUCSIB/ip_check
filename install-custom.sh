@@ -1,272 +1,227 @@
 #!/bin/bash
 
-# ========================
-# Customizable section
-# ========================
-APP_NAME="${APP_NAME:-nezha-agent}"
-DISPLAY_NAME="${DISPLAY_NAME:-$APP_NAME}"
-CLI_NAME="${CLI_NAME:-$APP_NAME}"
-SERVICE_NAME="${SERVICE_NAME:-$APP_NAME}"
-BIN_NAME="${BIN_NAME:-$APP_NAME}"
-RUN_USER="${RUN_USER:-root}"
-RUN_GROUP="${RUN_GROUP:-root}"
+# =========================================================
+# 深度自定义安装脚本 - 隐藏原始名称
+# =========================================================
 
-UPSTREAM_REPO="${UPSTREAM_REPO:-wyx2685/v2node}"
-UPSTREAM_BRANCH="${UPSTREAM_BRANCH:-main}"
-UPSTREAM_RELEASE_ASSET_PREFIX="${UPSTREAM_RELEASE_ASSET_PREFIX:-v2node-linux}"
-UPSTREAM_RELEASE_BIN_NAME="${UPSTREAM_RELEASE_BIN_NAME:-v2node}"
-
-INSTALL_DIR="${INSTALL_DIR:-/usr/local/$APP_NAME}"
-CONFIG_DIR="${CONFIG_DIR:-/etc/$APP_NAME}"
-CONFIG_FILE="${CONFIG_FILE:-$CONFIG_DIR/config.json}"
-CLI_PATH="${CLI_PATH:-/usr/bin/$CLI_NAME}"
-SCRIPT_STORE_PATH="${SCRIPT_STORE_PATH:-$INSTALL_DIR/scripts/manage.sh}"
-PID_FILE="${PID_FILE:-/run/$SERVICE_NAME.pid}"
-KEEP_CONFIG_ON_UNINSTALL="${KEEP_CONFIG_ON_UNINSTALL:-0}"
-AUTO_OPEN_PORTS="${AUTO_OPEN_PORTS:-0}"
-
-ENABLE_LEGACY_COMPAT="${ENABLE_LEGACY_COMPAT:-1}"
-LEGACY_COMPAT_DIR="${LEGACY_COMPAT_DIR:-/etc/v2node}"
-# ========================
+# --- 你可以在这里修改为你想要的名称 ---
+CUSTOM_APP_NAME="agent-core"       # 安装目录名和程序文件名
+CUSTOM_CLI_NAME="ctl"              # 你在命令行输入的管理命令名称
+CUSTOM_SERVICE_NAME="agent-svc"    # 系统服务名称
+# -----------------------------------
 
 red='\033[0;31m'
 green='\033[0;32m'
 yellow='\033[0;33m'
 plain='\033[0m'
 
-cur_dir=$(pwd)
+# 路径定义
+INSTALL_DIR="/usr/local/${CUSTOM_APP_NAME}"
+BIN_PATH="${INSTALL_DIR}/${CUSTOM_APP_NAME}"
+CONF_DIR="/etc/${CUSTOM_APP_NAME}"
+CONF_FILE="${CONF_DIR}/config.json"
+CLI_BIN="/usr/bin/${CUSTOM_CLI_NAME}"
 
-# --- 修复路径获取逻辑 ---
+cur_dir=$(pwd)
 if [[ -n "${BASH_SOURCE[0]}" ]]; then
     self_path="${BASH_SOURCE[0]}"
 else
     self_path="$0"
 fi
-# -----------------------
 
-RELEASE_API_URL="https://api.github.com/repos/${UPSTREAM_REPO}/releases/latest"
+# 基础检查
+[[ $EUID -ne 0 ]] && echo -e "${red}Error: root privileges required.${plain}" && exit 1
 
-VERSION_ARG=""
-API_HOST_ARG=""
-NODE_ID_ARG=""
-API_KEY_ARG=""
-
-[[ $EUID -ne 0 ]] && echo -e "${red}Error:${plain} this script must be run as root.\n" && exit 1
-
-# 操作系统检测逻辑 (保持原样)
-if [[ -f /etc/redhat-release ]]; then
-    release="centos"
-elif cat /etc/issue 2>/dev/null | grep -Eqi "alpine"; then
-    release="alpine"
-elif cat /etc/issue 2>/dev/null | grep -Eqi "debian"; then
-    release="debian"
-elif cat /etc/issue 2>/dev/null | grep -Eqi "ubuntu"; then
-    release="ubuntu"
-elif cat /etc/issue 2>/dev/null | grep -Eqi "centos|red hat|redhat|rocky|alma|oracle linux"; then
-    release="centos"
-elif cat /proc/version 2>/dev/null | grep -Eqi "debian"; then
-    release="debian"
-elif cat /proc/version 2>/dev/null | grep -Eqi "ubuntu"; then
-    release="ubuntu"
-elif cat /proc/version 2>/dev/null | grep -Eqi "centos|red hat|redhat|rocky|alma|oracle linux"; then
-    release="centos"
-elif cat /proc/version 2>/dev/null | grep -Eqi "arch"; then
-    release="arch"
-else
-    echo -e "${red}Unable to detect the OS version.${plain}\n" && exit 1
-fi
+# 系统检测 (简化版)
+if [[ -f /etc/redhat-release ]]; then release="centos"
+elif grep -Eqi "alpine" /etc/issue; then release="alpine"
+elif grep -Eqi "debian|ubuntu" /proc/version; then release="debian"
+else release="linux"; fi
 
 arch=$(uname -m)
-if [[ $arch == "x86_64" || $arch == "x64" || $arch == "amd64" ]]; then
-    arch="64"
-elif [[ $arch == "aarch64" || $arch == "arm64" ]]; then
-    arch="arm64-v8a"
-else
-    arch="64"
-fi
+case $arch in
+    x86_64|amd64) arch="64" ;;
+    aarch64|arm64) arch="arm64-v8a" ;;
+    *) arch="64" ;;
+esac
 
-# 基础函数 (安装依赖、检测状态等)
+########################
+# 功能函数
+########################
+
 parse_args() {
+    VERSION_ARG=""
+    API_HOST_ARG=""
+    NODE_ID_ARG=""
+    API_KEY_ARG=""
     while [[ $# -gt 0 ]]; do
         case "$1" in
             --api-host) API_HOST_ARG="$2"; shift 2 ;;
-            --node-id) NODE_ID_ARG="$2"; shift 2 ;;
-            --api-key) API_KEY_ARG="$2"; shift 2 ;;
-            -h|--help) show_usage; exit 0 ;;
+            --node-id)  NODE_ID_ARG="$2"; shift 2 ;;
+            --api-key)  API_KEY_ARG="$2"; shift 2 ;;
             *) [[ -z "$VERSION_ARG" ]] && VERSION_ARG="$1"; shift ;;
         esac
     done
 }
 
 install_base() {
-    echo -e "${green}Installing base dependencies...${plain}"
-    if [[ x"${release}" == x"centos" ]]; then
-        yum install -y wget curl unzip tar socat ca-certificates pv
-    elif [[ x"${release}" == x"alpine" ]]; then
-        apk add wget curl unzip tar socat ca-certificates pv
+    echo -e "${green}Installing dependencies...${plain}"
+    if [[ "$release" == "centos" ]]; then
+        yum install -y wget curl unzip tar ca-certificates pv
+    elif [[ "$release" == "alpine" ]]; then
+        apk add --no-cache wget curl unzip tar ca-certificates pv
     else
-        apt-get update -y && apt-get install -y wget curl unzip tar cron socat ca-certificates pv
-    fi
-}
-
-service_action() {
-    if [[ x"${release}" == x"alpine" ]]; then
-        service "$SERVICE_NAME" "$1"
-    else
-        systemctl "$1" "$SERVICE_NAME"
+        apt-get update -y && apt-get install -y wget curl unzip tar ca-certificates pv
     fi
 }
 
 check_status() {
-    if [[ ! -x "${INSTALL_DIR}/${BIN_NAME}" ]]; then return 2; fi
     if [[ x"${release}" == x"alpine" ]]; then
-        service "$SERVICE_NAME" status >/dev/null 2>&1 && return 0 || return 1
+        service "${CUSTOM_SERVICE_NAME}" status 2>/dev/null | grep -q "started" && return 0 || return 1
     else
-        systemctl is-active --quiet "$SERVICE_NAME" && return 0 || return 1
+        systemctl is-active --quiet "${CUSTOM_SERVICE_NAME}" && return 0 || return 1
     fi
 }
 
-resolve_version() {
-    local version_param="$1"
-    [[ -n "$version_param" ]] && echo "$version_param" && return 0
-    local last_version=$(curl -fsSL "$RELEASE_API_URL" | grep '"tag_name":' | sed -E 's/.*"([^"]+)".*/\1/')
-    [[ -z "$last_version" ]] && return 1
-    echo "$last_version"
-}
-
-download_release() {
+# 核心安装逻辑
+install_core() {
     local version="$1"
-    local zip_path="$2"
-    local url="https://github.com/${UPSTREAM_REPO}/releases/download/${version}/${UPSTREAM_RELEASE_ASSET_PREFIX}-${arch}.zip"
-    echo -e "${green}Downloading: ${url}${plain}"
-    curl -fL --progress-bar "$url" -o "$zip_path"
-}
+    mkdir -p "$INSTALL_DIR" "$CONF_DIR"
+    cd "$INSTALL_DIR" || exit
 
-# --- 关键修复：管理脚本包装器 ---
-install_wrapper() {
-    local source_script="$1"
-    mkdir -p "$(dirname "$SCRIPT_STORE_PATH")"
-    
-    # 检查源脚本是否为空
-    if [[ ! -s "$source_script" ]]; then
-        echo -e "${red}Error: Source script is empty. Try running with 'bash script.sh' instead of piping.${plain}"
-        # 如果是空的，尝试从当前正在运行的进程中恢复（针对某些环境）
-        cat "$0" > "$SCRIPT_STORE_PATH"
-    else
-        cat "$source_script" > "$SCRIPT_STORE_PATH"
+    # 获取版本并下载 (从原始仓库下载，但本地改名)
+    if [[ -z "$version" ]]; then
+        version=$(curl -Ls "https://api.github.com/repos/wyx2685/v2node/releases/latest" | grep '"tag_name":' | sed -E 's/.*"([^"]+)".*/\1/')
     fi
     
-    chmod +x "$SCRIPT_STORE_PATH"
+    echo -e "${green}Target version: ${version}${plain}"
+    local url="https://github.com/wyx2685/v2node/releases/download/${version}/v2node-linux-${arch}.zip"
+    
+    curl -sL "$url" | pv -N "Downloading" > tmp.zip
+    unzip -o tmp.zip && rm -f tmp.zip
 
-    cat > "$CLI_PATH" <<EOF
-#!/bin/bash
-export APP_NAME='${APP_NAME}'
-export DISPLAY_NAME='${DISPLAY_NAME}'
-export CLI_NAME='${CLI_NAME}'
-export SERVICE_NAME='${SERVICE_NAME}'
-export BIN_NAME='${BIN_NAME}'
-export RUN_USER='${RUN_USER}'
-export RUN_GROUP='${RUN_GROUP}'
-export UPSTREAM_REPO='${UPSTREAM_REPO}'
-export INSTALL_DIR='${INSTALL_DIR}'
-export CONFIG_DIR='${CONFIG_DIR}'
-export CONFIG_FILE='${CONFIG_FILE}'
-export CLI_PATH='${CLI_PATH}'
-export SCRIPT_STORE_PATH='${SCRIPT_STORE_PATH}'
-export PID_FILE='${PID_FILE}'
-export ENABLE_LEGACY_COMPAT='${ENABLE_LEGACY_COMPAT}'
-export LEGACY_COMPAT_DIR='${LEGACY_COMPAT_DIR}'
-exec "\$SCRIPT_STORE_PATH" "\$@"
+    # --- 关键：重命名二进制文件 ---
+    mv -f v2node "${CUSTOM_APP_NAME}"
+    chmod +x "${CUSTOM_APP_NAME}"
+    
+    # 移动资源文件
+    [[ -f geoip.dat ]] && mv -f geoip.dat "${CONF_DIR}/"
+    [[ -f geosite.dat ]] && mv -f geosite.dat "${CONF_DIR}/"
+
+    # --- 关键：自定义服务文件 ---
+    if [[ "$release" == "alpine" ]]; then
+        cat <<EOF > "/etc/init.d/${CUSTOM_SERVICE_NAME}"
+#!/sbin/openrc-run
+name="${CUSTOM_SERVICE_NAME}"
+command="${BIN_PATH}"
+command_args="server"
+command_background="yes"
+pidfile="/run/${CUSTOM_SERVICE_NAME}.pid"
+depend() { need net; }
 EOF
-    chmod +x "$CLI_PATH"
-}
-
-write_systemd_service() {
-    cat > "/etc/systemd/system/${SERVICE_NAME}.service" <<EOF
+        chmod +x "/etc/init.d/${CUSTOM_SERVICE_NAME}"
+        rc-update add "${CUSTOM_SERVICE_NAME}" default
+    else
+        cat <<EOF > "/etc/systemd/system/${CUSTOM_SERVICE_NAME}.service"
 [Unit]
-Description=${DISPLAY_NAME} Service
+Description=System Monitoring Agent
 After=network.target
 [Service]
-User=${RUN_USER}
-Group=${RUN_GROUP}
+Type=simple
 WorkingDirectory=${INSTALL_DIR}
-ExecStart=${INSTALL_DIR}/${BIN_NAME} server -c ${CONFIG_FILE}
+ExecStart=${BIN_PATH} server
 Restart=always
-RestartSec=10
 [Install]
 WantedBy=multi-user.target
 EOF
-    systemctl daemon-reload
-    systemctl enable "$SERVICE_NAME" >/dev/null 2>&1
-}
+        systemctl daemon-reload
+        systemctl enable "${CUSTOM_SERVICE_NAME}"
+    fi
 
-write_openrc_service() {
-    cat > "/etc/init.d/${SERVICE_NAME}" <<EOF
-#!/sbin/openrc-run
-name="${DISPLAY_NAME}"
-command="${INSTALL_DIR}/${BIN_NAME}"
-command_args="server -c ${CONFIG_FILE}"
-command_user="${RUN_USER}:${RUN_GROUP}"
-pidfile="${PID_FILE}"
-command_background="yes"
-depend() { need net; }
+    # --- 关键：自克隆为管理工具 ---
+    if [[ -f "$self_path" ]]; then
+        cat "$self_path" > "$CLI_BIN"
+    else
+        # 兜底：如果是管道安装，请修改下方 URL 为你自己的 GitHub 脚本地址
+        curl -Ls -o "$CLI_BIN" https://raw.githubusercontent.com/TIUCSIB/ip_check/master/install-custom.sh
+    fi
+    chmod +x "$CLI_BIN"
+
+    # 配置初始化
+    if [[ ! -f "$CONF_FILE" ]]; then
+        if [[ -n "$API_HOST_ARG" ]]; then
+            # 自动生成
+            cat > "$CONF_FILE" <<EOF
+{
+    "Log": { "Level": "warning", "Output": "", "Access": "none" },
+    "Nodes": [ { "ApiHost": "${API_HOST_ARG}", "NodeID": ${NODE_ID_ARG}, "ApiKey": "${API_KEY_ARG}", "Timeout": 15 } ]
+}
 EOF
-    chmod +x "/etc/init.d/${SERVICE_NAME}"
-    rc-update add "$SERVICE_NAME" default >/dev/null 2>&1
+        else
+            # 默认模板
+            cat > "$CONF_FILE" <<EOF
+{
+    "Log": { "Level": "warning" },
+    "Nodes": []
+}
+EOF
+        fi
+    fi
+
+    # 启动
+    if [[ "$release" == "alpine" ]]; then service "${CUSTOM_SERVICE_NAME}" restart; else systemctl restart "${CUSTOM_SERVICE_NAME}"; fi
+    
+    echo "------------------------------------------"
+    echo -e "${green}Installation success!${plain}"
+    echo -e "Command: ${yellow}${CUSTOM_CLI_NAME}${plain}"
+    echo -e "Service: ${yellow}${CUSTOM_SERVICE_NAME}${plain}"
+    echo "------------------------------------------"
 }
 
-install_app() {
-    local version_param="$1"
-    local release_version=$(resolve_version "$version_param") || exit 1
-    
-    # 在删除前先保存当前脚本内容到内存/临时文件，防止自毁后无法复制
-    local temp_self="/tmp/nezha_bak.sh"
-    cat "$self_path" > "$temp_self"
-
-    mkdir -p "$INSTALL_DIR"
-    local zip_file="${INSTALL_DIR}/pkg.zip"
-    
-    download_release "$release_version" "$zip_file" || exit 1
-    unzip -o "$zip_file" -d "$INSTALL_DIR" >/dev/null
-    rm -f "$zip_file"
-
-    cd "$INSTALL_DIR" || exit 1
-    [[ "$UPSTREAM_RELEASE_BIN_NAME" != "$BIN_NAME" ]] && mv -f "$UPSTREAM_RELEASE_BIN_NAME" "$BIN_NAME"
-    chmod +x "$BIN_NAME"
-
-    mkdir -p "$CONFIG_DIR"
-    [[ -f geoip.dat ]] && cp -f geoip.dat "$CONFIG_DIR/"
-    [[ -f geosite.dat ]] && cp -f geosite.dat "$CONFIG_DIR/"
-
-    if [[ x"${release}" == x"alpine" ]]; then write_openrc_service; else write_systemd_service; fi
-    
-    install_wrapper "$temp_self"
-    rm -f "$temp_self"
-
-    echo -e "${green}${DISPLAY_NAME} ${release_version} installed successfully.${plain}"
+uninstall() {
+    read -rp "Are you sure to uninstall? (y/n): " res
+    [[ "$res" != "y" ]] && exit 0
+    if [[ "$release" == "alpine" ]]; then
+        service "${CUSTOM_SERVICE_NAME}" stop
+        rc-update del "${CUSTOM_SERVICE_NAME}" default
+        rm -f "/etc/init.d/${CUSTOM_SERVICE_NAME}"
+    else
+        systemctl disable "${CUSTOM_SERVICE_NAME}"
+        systemctl stop "${CUSTOM_SERVICE_NAME}"
+        rm -f "/etc/systemd/system/${CUSTOM_SERVICE_NAME}.service"
+    fi
+    rm -rf "$INSTALL_DIR" "$CONF_DIR" "$CLI_BIN"
+    echo -e "${green}Cleanup finished.${plain}"
 }
 
-# --- 逻辑入口 ---
+########################
+# 主入口
+########################
+
 main() {
-    case "$1" in
-        install|update) shift; install_base; install_app "$@"; ;;
-        status) check_status; 
-                case $? in 
-                    0) echo -e "Status: ${green}Running${plain}" ;;
-                    1) echo -e "Status: ${yellow}Stopped${plain}" ;;
-                    2) echo -e "Status: ${red}Not Installed${plain}" ;;
-                esac ;;
-        start|stop|restart) service_action "$1" ;;
-        uninstall) 
-            read -p "Are you sure? (y/n) " res
-            [[ "$res" == "y" ]] && service_action stop && rm -rf "$INSTALL_DIR" "$CLI_PATH" && echo "Uninstalled." ;;
-        *)
-            if [[ ! -f "$CLI_PATH" ]]; then
-                install_base && install_app "$@"
+    local cmd="$1"
+    parse_args "$@"
+
+    case "$cmd" in
+        install|update) install_base && install_core "$VERSION_ARG" ;;
+        uninstall)      uninstall ;;
+        start|stop|restart)
+            if [[ "$release" == "alpine" ]]; then service "${CUSTOM_SERVICE_NAME}" "$cmd"; else systemctl "$cmd" "${CUSTOM_SERVICE_NAME}"; fi ;;
+        status)
+            check_status && echo -e "Status: ${green}Running${plain}" || echo -e "Status: ${red}Not Running${plain}" ;;
+        log)
+            if [[ "$release" == "alpine" ]]; then echo "Check logs in /var/log/"; else journalctl -u "${CUSTOM_SERVICE_NAME}" -e --no-pager -f; fi ;;
+        config)
+            ${EDITOR:-vi} "$CONF_FILE" ;;
+        "")
+            if [[ ! -f "$CLI_BIN" ]]; then
+                install_base && install_core "$VERSION_ARG"
             else
-                echo "Usage: $CLI_NAME {start|stop|restart|status|uninstall}"
-            fi
-            ;;
+                echo -e "${green}${CUSTOM_APP_NAME} Control Tool${plain}"
+                echo "Usage: ${CUSTOM_CLI_NAME} {start|stop|restart|status|log|config|uninstall}"
+            fi ;;
+        *)
+            echo "Unknown command: $cmd" ;;
     esac
 }
 
